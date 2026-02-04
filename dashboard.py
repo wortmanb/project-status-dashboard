@@ -9,6 +9,7 @@ import subprocess
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from flask import Flask, render_template_string, jsonify
 
 app = Flask(__name__)
@@ -388,8 +389,7 @@ def get_repo_status(repo_path):
         changes = [l for l in status.split("\n") if l.strip()]
         repo["changes_count"] = len(changes)
     
-    # Ahead/behind - first fetch to get accurate count
-    run_git(repo_path, "fetch", "--quiet")
+    # Ahead/behind (uses cached remote tracking - no fetch for speed)
     tracking = run_git(repo_path, "rev-parse", "--abbrev-ref", "@{upstream}")
     if tracking:
         ahead_behind = run_git(repo_path, "rev-list", "--left-right", "--count", f"HEAD...@{{upstream}}")
@@ -416,18 +416,28 @@ def get_repo_status(repo_path):
 
 
 def get_all_repos():
-    """Scan git directory and get status for all repos."""
+    """Scan git directory and get status for all repos (parallel)."""
     repos = []
     
     if not GIT_DIR.exists():
         return repos
     
-    for item in sorted(GIT_DIR.iterdir()):
-        if item.is_dir() and not item.name.startswith("."):
-            status = get_repo_status(item)
+    # Collect all repo paths first
+    repo_paths = [
+        item for item in sorted(GIT_DIR.iterdir())
+        if item.is_dir() and not item.name.startswith(".")
+    ]
+    
+    # Process repos in parallel (max 10 workers to avoid overwhelming git/network)
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(get_repo_status, path): path for path in repo_paths}
+        for future in as_completed(futures):
+            status = future.result()
             if status:
                 repos.append(status)
     
+    # Sort by name after parallel processing
+    repos.sort(key=lambda r: r["name"].lower())
     return repos
 
 
