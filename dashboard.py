@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, request, jsonify
 
 app = Flask(__name__)
 
@@ -83,6 +83,34 @@ HTML_TEMPLATE = """
         .timestamp {
             color: var(--text-secondary);
             font-size: 0.875rem;
+        }
+        
+        .sort-controls {
+            display: flex;
+            gap: 0.5rem;
+        }
+        
+        .sort-btn {
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            padding: 0.4rem 0.8rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            text-decoration: none;
+            transition: all 0.2s;
+        }
+        
+        .sort-btn:hover {
+            border-color: var(--accent-blue);
+            color: var(--text-primary);
+        }
+        
+        .sort-btn.active {
+            background: var(--accent-blue);
+            border-color: var(--accent-blue);
+            color: var(--bg-primary);
         }
         
         .grid {
@@ -208,7 +236,11 @@ HTML_TEMPLATE = """
     <div class="container">
         <header>
             <h1>Project Status</h1>
-            <span class="timestamp">Updated: {{ timestamp }}</span>
+            <div class="sort-controls">
+                <a href="?sort=recent" class="sort-btn {{ 'active' if sort_by == 'recent' else '' }}">Recent</a>
+                <a href="?sort=alpha" class="sort-btn {{ 'active' if sort_by == 'alpha' else '' }}">A-Z</a>
+                <span class="timestamp">Updated: {{ timestamp }}</span>
+            </div>
         </header>
         <div class="grid">
             {% for repo in repos %}
@@ -374,6 +406,7 @@ def get_repo_status(repo_path):
         "last_message": "",
         "last_author": "",
         "last_time": "",
+        "last_timestamp": 0,
         "issues_count": None,
         "github_url": None,
         "error": None
@@ -407,6 +440,12 @@ def get_repo_status(repo_path):
             repo["last_message"] = parts[0][:80] + ("..." if len(parts[0]) > 80 else "")
             repo["last_author"] = parts[1]
             repo["last_time"] = get_relative_time(parts[2])
+            # Store raw timestamp for sorting
+            try:
+                dt = datetime.fromisoformat(parts[2].replace("Z", "+00:00"))
+                repo["last_timestamp"] = dt.timestamp()
+            except Exception:
+                pass
     
     # GitHub URL and issues
     repo["github_url"] = get_github_url(repo_path)
@@ -415,7 +454,7 @@ def get_repo_status(repo_path):
     return repo
 
 
-def get_all_repos():
+def get_all_repos(sort_by="alpha"):
     """Scan git directory and get status for all repos (parallel)."""
     repos = []
     
@@ -436,16 +475,20 @@ def get_all_repos():
             if status:
                 repos.append(status)
     
-    # Sort by name after parallel processing
-    repos.sort(key=lambda r: r["name"].lower())
+    # Sort based on preference
+    if sort_by == "recent":
+        repos.sort(key=lambda r: r.get("last_timestamp", 0), reverse=True)
+    else:
+        repos.sort(key=lambda r: r["name"].lower())
     return repos
 
 
 @app.route("/")
 def dashboard():
-    repos = get_all_repos()
+    sort_by = request.args.get("sort", "recent")  # default to recent
+    repos = get_all_repos(sort_by=sort_by)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    return render_template_string(HTML_TEMPLATE, repos=repos, timestamp=timestamp)
+    return render_template_string(HTML_TEMPLATE, repos=repos, timestamp=timestamp, sort_by=sort_by)
 
 
 @app.route("/api/status")
