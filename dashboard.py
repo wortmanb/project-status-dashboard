@@ -113,6 +113,27 @@ HTML_TEMPLATE = """
             color: var(--bg-primary);
         }
         
+        .toggle-label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+        
+        .toggle-label input {
+            cursor: pointer;
+        }
+        
+        .card.clean {
+            /* for JS filtering */
+        }
+        
+        .hide-clean .card.clean {
+            display: none;
+        }
+        
         .grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
@@ -239,12 +260,15 @@ HTML_TEMPLATE = """
             <div class="sort-controls">
                 <a href="?sort=recent" class="sort-btn {{ 'active' if sort_by == 'recent' else '' }}">Recent</a>
                 <a href="?sort=alpha" class="sort-btn {{ 'active' if sort_by == 'alpha' else '' }}">A-Z</a>
+                <label class="toggle-label">
+                    <input type="checkbox" id="hideClean" onchange="toggleClean()"> Hide clean
+                </label>
                 <span class="timestamp">Updated: {{ timestamp }}</span>
             </div>
         </header>
-        <div class="grid">
+        <div class="grid" id="repoGrid">
             {% for repo in repos %}
-            <div class="card">
+            <div class="card{% if repo.changes_count == 0 and repo.ahead == 0 and repo.behind == 0 %} clean{% endif %}">
                 <div class="card-header">
                     {% if repo.github_url %}
                     <a href="{{ repo.github_url }}" class="repo-name" target="_blank">{{ repo.name }}</a>
@@ -299,6 +323,26 @@ HTML_TEMPLATE = """
             {% endfor %}
         </div>
     </div>
+    <script>
+        function toggleClean() {
+            const grid = document.getElementById('repoGrid');
+            const checkbox = document.getElementById('hideClean');
+            if (checkbox.checked) {
+                grid.classList.add('hide-clean');
+                localStorage.setItem('hideClean', 'true');
+            } else {
+                grid.classList.remove('hide-clean');
+                localStorage.setItem('hideClean', 'false');
+            }
+        }
+        // Restore preference on load
+        document.addEventListener('DOMContentLoaded', function() {
+            if (localStorage.getItem('hideClean') === 'true') {
+                document.getElementById('hideClean').checked = true;
+                document.getElementById('repoGrid').classList.add('hide-clean');
+            }
+        });
+    </script>
 </body>
 </html>
 """
