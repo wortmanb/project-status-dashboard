@@ -246,6 +246,160 @@ HTML_TEMPLATE = """
             font-size: 0.85rem;
         }
         
+        .card-actions {
+            display: flex;
+            gap: 0.5rem;
+            margin-top: 0.75rem;
+            padding-top: 0.75rem;
+            border-top: 1px solid var(--border);
+        }
+        
+        .action-btn {
+            flex: 1;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.35rem;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .action-btn:hover:not(:disabled) {
+            border-color: var(--accent-blue);
+            color: var(--text-primary);
+        }
+        
+        .action-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .action-btn.loading {
+            position: relative;
+            color: transparent;
+        }
+        
+        .action-btn.loading::after {
+            content: "";
+            position: absolute;
+            width: 14px;
+            height: 14px;
+            border: 2px solid var(--text-secondary);
+            border-top-color: transparent;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        
+        .action-btn.sync-btn:hover:not(:disabled) {
+            border-color: var(--accent-purple);
+            color: var(--accent-purple);
+        }
+        
+        .action-btn.fetch-btn:hover:not(:disabled) {
+            border-color: var(--accent-blue);
+            color: var(--accent-blue);
+        }
+        
+        .feedback {
+            margin-top: 0.5rem;
+            padding: 0.5rem 0.75rem;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            display: none;
+        }
+        
+        .feedback.success {
+            display: block;
+            background: rgba(63, 185, 80, 0.15);
+            border: 1px solid var(--accent-green);
+            color: var(--accent-green);
+        }
+        
+        .feedback.error {
+            display: block;
+            background: rgba(248, 81, 73, 0.15);
+            border: 1px solid var(--accent-red);
+            color: var(--accent-red);
+        }
+        
+        .confirm-dialog {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+        
+        .confirm-box {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            max-width: 400px;
+            width: 90%;
+        }
+        
+        .confirm-box h3 {
+            margin-bottom: 0.75rem;
+            color: var(--text-primary);
+        }
+        
+        .confirm-box p {
+            color: var(--text-secondary);
+            margin-bottom: 1.25rem;
+            font-size: 0.9rem;
+        }
+        
+        .confirm-actions {
+            display: flex;
+            gap: 0.75rem;
+            justify-content: flex-end;
+        }
+        
+        .confirm-btn {
+            padding: 0.5rem 1rem;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: all 0.2s;
+        }
+        
+        .confirm-btn.cancel {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+        }
+        
+        .confirm-btn.cancel:hover {
+            color: var(--text-primary);
+            border-color: var(--text-secondary);
+        }
+        
+        .confirm-btn.confirm {
+            background: var(--accent-purple);
+            border-color: var(--accent-purple);
+            color: white;
+        }
+        
+        .confirm-btn.confirm:hover {
+            background: #8b5cf6;
+        }
+        
         @media (max-width: 768px) {
             body { padding: 1rem; }
             .grid { grid-template-columns: 1fr; }
@@ -318,6 +472,16 @@ HTML_TEMPLATE = """
                     </div>
                     <div class="commit-message">{{ repo.last_message }}</div>
                 </div>
+                
+                <div class="card-actions">
+                    <button class="action-btn fetch-btn" onclick="fetchRepo('{{ repo.name }}')" title="Fetch remote changes">
+                        🔄 Fetch
+                    </button>
+                    <button class="action-btn sync-btn" onclick="confirmSync('{{ repo.name }}')" title="Pull remote changes">
+                        ⬇️ Sync
+                    </button>
+                </div>
+                <div class="feedback" id="feedback-{{ repo.name }}"></div>
                 {% endif %}
             </div>
             {% endfor %}
@@ -335,6 +499,7 @@ HTML_TEMPLATE = """
                 localStorage.setItem('hideClean', 'false');
             }
         }
+        
         // Restore preference on load
         document.addEventListener('DOMContentLoaded', function() {
             if (localStorage.getItem('hideClean') === 'true') {
@@ -342,6 +507,156 @@ HTML_TEMPLATE = """
                 document.getElementById('repoGrid').classList.add('hide-clean');
             }
         });
+        
+        function showFeedback(repo, message, isError) {
+            const fb = document.getElementById('feedback-' + repo);
+            if (fb) {
+                fb.textContent = message;
+                fb.className = 'feedback ' + (isError ? 'error' : 'success');
+                // Auto-hide after 5s
+                setTimeout(() => {
+                    fb.className = 'feedback';
+                }, 5000);
+            }
+        }
+        
+        function setButtonLoading(btn, loading) {
+            if (loading) {
+                btn.classList.add('loading');
+                btn.disabled = true;
+            } else {
+                btn.classList.remove('loading');
+                btn.disabled = false;
+            }
+        }
+        
+        async function fetchRepo(repo) {
+            const btn = event.target.closest('.fetch-btn');
+            setButtonLoading(btn, true);
+            
+            try {
+                const response = await fetch('/api/fetch/' + encodeURIComponent(repo), {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                if (data.success) {
+                    let msg = '✓ Fetched successfully';
+                    if (data.ahead !== undefined || data.behind !== undefined) {
+                        const parts = [];
+                        if (data.ahead > 0) parts.push('↑' + data.ahead + ' ahead');
+                        if (data.behind > 0) parts.push('↓' + data.behind + ' behind');
+                        if (parts.length > 0) {
+                            msg += ' (' + parts.join(', ') + ')';
+                        } else {
+                            msg += ' (in sync)';
+                        }
+                    }
+                    showFeedback(repo, msg, false);
+                    
+                    // Update the sync stat in the card
+                    updateSyncStat(repo, data.ahead, data.behind);
+                } else {
+                    showFeedback(repo, '✗ ' + (data.error || 'Fetch failed'), true);
+                }
+            } catch (err) {
+                showFeedback(repo, '✗ Network error', true);
+            } finally {
+                setButtonLoading(btn, false);
+            }
+        }
+        
+        function updateSyncStat(repo, ahead, behind) {
+            // Find the card for this repo and update the sync stat
+            const cards = document.querySelectorAll('.card');
+            for (const card of cards) {
+                const nameEl = card.querySelector('.repo-name');
+                if (nameEl && nameEl.textContent === repo) {
+                    const stats = card.querySelectorAll('.stat');
+                    for (const stat of stats) {
+                        const label = stat.querySelector('.stat-label');
+                        if (label && label.textContent === 'Sync') {
+                            const valueEl = stat.querySelector('.stat-value');
+                            if (valueEl) {
+                                let className = 'stat-value ';
+                                let text = '';
+                                if (ahead > 0 && behind > 0) {
+                                    className += 'dirty';
+                                    text = '↑' + ahead + ' ↓' + behind;
+                                } else if (ahead > 0) {
+                                    className += 'ahead';
+                                    text = '↑' + ahead;
+                                } else if (behind > 0) {
+                                    className += 'behind';
+                                    text = '↓' + behind;
+                                } else {
+                                    className += 'synced';
+                                    text = '✓ Synced';
+                                }
+                                valueEl.className = className;
+                                valueEl.textContent = text;
+                            }
+                            break;
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        
+        function confirmSync(repo) {
+            const dialog = document.createElement('div');
+            dialog.className = 'confirm-dialog';
+            dialog.innerHTML = `
+                <div class="confirm-box">
+                    <h3>⬇️ Sync Repository</h3>
+                    <p>This will run <code>git pull</code> on <strong>${repo}</strong>. Make sure you don't have conflicting local changes.</p>
+                    <div class="confirm-actions">
+                        <button class="confirm-btn cancel" onclick="this.closest('.confirm-dialog').remove()">Cancel</button>
+                        <button class="confirm-btn confirm" onclick="doSync('${repo}', this)">Pull Changes</button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(dialog);
+            
+            // Close on backdrop click
+            dialog.addEventListener('click', (e) => {
+                if (e.target === dialog) dialog.remove();
+            });
+        }
+        
+        async function doSync(repo, confirmBtn) {
+            const dialog = confirmBtn.closest('.confirm-dialog');
+            confirmBtn.disabled = true;
+            confirmBtn.textContent = 'Pulling...';
+            
+            try {
+                const response = await fetch('/api/pull/' + encodeURIComponent(repo), {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                
+                dialog.remove();
+                
+                if (data.success) {
+                    let msg = '✓ Pull successful';
+                    if (data.message) {
+                        msg += ': ' + data.message;
+                    }
+                    showFeedback(repo, msg, false);
+                    
+                    // Update sync stat to show we're in sync now
+                    if (data.ahead !== undefined) {
+                        updateSyncStat(repo, data.ahead, data.behind || 0);
+                    }
+                } else {
+                    showFeedback(repo, '✗ ' + (data.error || 'Pull failed'), true);
+                }
+            } catch (err) {
+                dialog.remove();
+                showFeedback(repo, '✗ Network error', true);
+            }
+        }
     </script>
 </body>
 </html>
@@ -542,6 +857,123 @@ def api_status():
     return jsonify({
         "timestamp": datetime.now().isoformat(),
         "repos": repos
+    })
+
+
+def validate_repo_name(name):
+    """Validate repo name to prevent directory traversal."""
+    # Only allow alphanumeric, dash, underscore, dot
+    import re
+    if not re.match(r'^[\w\-\.]+$', name):
+        return False
+    if '..' in name or name.startswith('.'):
+        return False
+    return True
+
+
+@app.route("/api/fetch/<repo>", methods=["POST"])
+def api_fetch(repo):
+    """Fetch remote changes for a repo (git fetch)."""
+    if not validate_repo_name(repo):
+        return jsonify({"success": False, "error": "Invalid repository name"}), 400
+    
+    repo_path = GIT_DIR / repo
+    if not repo_path.exists() or not (repo_path / ".git").exists():
+        return jsonify({"success": False, "error": "Repository not found"}), 404
+    
+    # Run git fetch
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "fetch", "--all"],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        if result.returncode != 0:
+            return jsonify({
+                "success": False,
+                "error": result.stderr.strip() or "Fetch failed"
+            })
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Fetch timed out"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+    
+    # Get updated ahead/behind status
+    ahead, behind = 0, 0
+    tracking = run_git(repo_path, "rev-parse", "--abbrev-ref", "@{upstream}")
+    if tracking:
+        ahead_behind = run_git(repo_path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+        if ahead_behind:
+            parts = ahead_behind.split()
+            if len(parts) == 2:
+                ahead = int(parts[0])
+                behind = int(parts[1])
+    
+    return jsonify({
+        "success": True,
+        "ahead": ahead,
+        "behind": behind
+    })
+
+
+@app.route("/api/pull/<repo>", methods=["POST"])
+def api_pull(repo):
+    """Pull remote changes for a repo (git pull)."""
+    if not validate_repo_name(repo):
+        return jsonify({"success": False, "error": "Invalid repository name"}), 400
+    
+    repo_path = GIT_DIR / repo
+    if not repo_path.exists() or not (repo_path / ".git").exists():
+        return jsonify({"success": False, "error": "Repository not found"}), 404
+    
+    # Run git pull
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_path), "pull"],
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        if result.returncode != 0:
+            return jsonify({
+                "success": False,
+                "error": result.stderr.strip() or "Pull failed"
+            })
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Pull timed out"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)})
+    
+    # Parse output for useful message
+    output = result.stdout.strip()
+    message = ""
+    if "Already up to date" in output:
+        message = "Already up to date"
+    elif "files changed" in output or "insertions" in output:
+        # Extract summary line
+        lines = output.split('\n')
+        for line in lines:
+            if "files changed" in line or "file changed" in line:
+                message = line.strip()
+                break
+    
+    # Get updated ahead/behind status
+    ahead, behind = 0, 0
+    tracking = run_git(repo_path, "rev-parse", "--abbrev-ref", "@{upstream}")
+    if tracking:
+        ahead_behind = run_git(repo_path, "rev-list", "--left-right", "--count", "HEAD...@{upstream}")
+        if ahead_behind:
+            parts = ahead_behind.split()
+            if len(parts) == 2:
+                ahead = int(parts[0])
+                behind = int(parts[1])
+    
+    return jsonify({
+        "success": True,
+        "message": message,
+        "ahead": ahead,
+        "behind": behind
     })
 
 
