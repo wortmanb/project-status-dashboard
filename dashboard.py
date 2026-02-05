@@ -200,6 +200,21 @@ HTML_TEMPLATE = """
             text-align: center;
         }
         
+        .stat.clickable {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .stat.clickable:hover {
+            border: 1px solid var(--accent-blue);
+            margin: -1px;
+        }
+        
+        .stat.clickable.loading {
+            opacity: 0.6;
+            pointer-events: none;
+        }
+        
         .stat-label {
             font-size: 0.7rem;
             text-transform: uppercase;
@@ -244,70 +259,6 @@ HTML_TEMPLATE = """
         .error {
             color: var(--accent-red);
             font-size: 0.85rem;
-        }
-        
-        .card-actions {
-            display: flex;
-            gap: 0.5rem;
-            margin-top: 0.75rem;
-            padding-top: 0.75rem;
-            border-top: 1px solid var(--border);
-        }
-        
-        .action-btn {
-            flex: 1;
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 0.35rem;
-            background: var(--bg-tertiary);
-            border: 1px solid var(--border);
-            color: var(--text-secondary);
-            padding: 0.5rem 0.75rem;
-            border-radius: 6px;
-            font-size: 0.8rem;
-            cursor: pointer;
-            transition: all 0.2s;
-        }
-        
-        .action-btn:hover:not(:disabled) {
-            border-color: var(--accent-blue);
-            color: var(--text-primary);
-        }
-        
-        .action-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        
-        .action-btn.loading {
-            position: relative;
-            color: transparent;
-        }
-        
-        .action-btn.loading::after {
-            content: "";
-            position: absolute;
-            width: 14px;
-            height: 14px;
-            border: 2px solid var(--text-secondary);
-            border-top-color: transparent;
-            border-radius: 50%;
-            animation: spin 0.8s linear infinite;
-        }
-        
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        
-        .action-btn.sync-btn:hover:not(:disabled) {
-            border-color: var(--accent-purple);
-            color: var(--accent-purple);
-        }
-        
-        .action-btn.fetch-btn:hover:not(:disabled) {
-            border-color: var(--accent-blue);
-            color: var(--accent-blue);
         }
         
         .feedback {
@@ -436,19 +387,19 @@ HTML_TEMPLATE = """
                 <p class="error">{{ repo.error }}</p>
                 {% else %}
                 <div class="stats">
-                    <div class="stat">
+                    <div class="stat clickable" onclick="fetchRepo('{{ repo.name }}', this)" title="Click to fetch remote changes">
                         <div class="stat-label">Changes</div>
                         <div class="stat-value {{ 'dirty' if repo.changes_count > 0 else 'clean' }}">
                             {{ repo.changes_count if repo.changes_count > 0 else '✓ Clean' }}
                         </div>
                     </div>
-                    <div class="stat">
+                    <div class="stat clickable" onclick="confirmSync('{{ repo.name }}')" title="Click to pull remote changes">
                         <div class="stat-label">Sync</div>
                         <div class="stat-value 
                             {%- if repo.ahead > 0 and repo.behind > 0 %} dirty
                             {%- elif repo.ahead > 0 %} ahead
                             {%- elif repo.behind > 0 %} behind
-                            {%- else %} synced{% endif %}">
+                            {%- else %} synced{% endif %}" id="sync-{{ repo.name }}">
                             {% if repo.ahead > 0 or repo.behind > 0 %}
                                 {% if repo.ahead > 0 %}↑{{ repo.ahead }}{% endif %}
                                 {% if repo.behind > 0 %}↓{{ repo.behind }}{% endif %}
@@ -473,14 +424,6 @@ HTML_TEMPLATE = """
                     <div class="commit-message">{{ repo.last_message }}</div>
                 </div>
                 
-                <div class="card-actions">
-                    <button class="action-btn fetch-btn" onclick="fetchRepo('{{ repo.name }}')" title="Fetch remote changes">
-                        🔄 Fetch
-                    </button>
-                    <button class="action-btn sync-btn" onclick="confirmSync('{{ repo.name }}')" title="Pull remote changes">
-                        ⬇️ Sync
-                    </button>
-                </div>
                 <div class="feedback" id="feedback-{{ repo.name }}"></div>
                 {% endif %}
             </div>
@@ -520,19 +463,8 @@ HTML_TEMPLATE = """
             }
         }
         
-        function setButtonLoading(btn, loading) {
-            if (loading) {
-                btn.classList.add('loading');
-                btn.disabled = true;
-            } else {
-                btn.classList.remove('loading');
-                btn.disabled = false;
-            }
-        }
-        
-        async function fetchRepo(repo) {
-            const btn = event.target.closest('.fetch-btn');
-            setButtonLoading(btn, true);
+        async function fetchRepo(repo, statEl) {
+            statEl.classList.add('loading');
             
             try {
                 const response = await fetch('/api/fetch/' + encodeURIComponent(repo), {
@@ -541,15 +473,13 @@ HTML_TEMPLATE = """
                 const data = await response.json();
                 
                 if (data.success) {
-                    let msg = '✓ Fetched successfully';
+                    let msg = '✓ Fetched';
                     if (data.ahead !== undefined || data.behind !== undefined) {
                         const parts = [];
-                        if (data.ahead > 0) parts.push('↑' + data.ahead + ' ahead');
-                        if (data.behind > 0) parts.push('↓' + data.behind + ' behind');
+                        if (data.ahead > 0) parts.push('↑' + data.ahead);
+                        if (data.behind > 0) parts.push('↓' + data.behind);
                         if (parts.length > 0) {
-                            msg += ' (' + parts.join(', ') + ')';
-                        } else {
-                            msg += ' (in sync)';
+                            msg += ' (' + parts.join(' ') + ')';
                         }
                     }
                     showFeedback(repo, msg, false);
@@ -562,46 +492,31 @@ HTML_TEMPLATE = """
             } catch (err) {
                 showFeedback(repo, '✗ Network error', true);
             } finally {
-                setButtonLoading(btn, false);
+                statEl.classList.remove('loading');
             }
         }
         
         function updateSyncStat(repo, ahead, behind) {
-            // Find the card for this repo and update the sync stat
-            const cards = document.querySelectorAll('.card');
-            for (const card of cards) {
-                const nameEl = card.querySelector('.repo-name');
-                if (nameEl && nameEl.textContent === repo) {
-                    const stats = card.querySelectorAll('.stat');
-                    for (const stat of stats) {
-                        const label = stat.querySelector('.stat-label');
-                        if (label && label.textContent === 'Sync') {
-                            const valueEl = stat.querySelector('.stat-value');
-                            if (valueEl) {
-                                let className = 'stat-value ';
-                                let text = '';
-                                if (ahead > 0 && behind > 0) {
-                                    className += 'dirty';
-                                    text = '↑' + ahead + ' ↓' + behind;
-                                } else if (ahead > 0) {
-                                    className += 'ahead';
-                                    text = '↑' + ahead;
-                                } else if (behind > 0) {
-                                    className += 'behind';
-                                    text = '↓' + behind;
-                                } else {
-                                    className += 'synced';
-                                    text = '✓ Synced';
-                                }
-                                valueEl.className = className;
-                                valueEl.textContent = text;
-                            }
-                            break;
-                        }
-                    }
-                    break;
-                }
+            const valueEl = document.getElementById('sync-' + repo);
+            if (!valueEl) return;
+            
+            let className = 'stat-value ';
+            let text = '';
+            if (ahead > 0 && behind > 0) {
+                className += 'dirty';
+                text = '↑' + ahead + ' ↓' + behind;
+            } else if (ahead > 0) {
+                className += 'ahead';
+                text = '↑' + ahead;
+            } else if (behind > 0) {
+                className += 'behind';
+                text = '↓' + behind;
+            } else {
+                className += 'synced';
+                text = '✓ Synced';
             }
+            valueEl.className = className;
+            valueEl.textContent = text;
         }
         
         function confirmSync(repo) {
