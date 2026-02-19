@@ -1,204 +1,217 @@
-# Project Status Dashboard v2
+# Project Status Dashboard v2 🐱
 
-Enhanced web dashboard for monitoring git repositories with **interactive git operations**. This is a significant upgrade from v1 with clickable sync/fetch buttons, confirmation dialogs, and real-time status updates.
+Enhanced interactive dashboard for monitoring and managing git repositories with clickable operations.
 
-## 🚀 New in v2
+**Evolution from v1:** This is the next generation of the project status dashboard, adding interactive git operations with safety guardrails and confirmation dialogs.
 
-### Interactive Git Operations
-- **📡 Fetch Button**: Updates remote refs without changing working directory
-- **⬇️ Pull Button**: Pulls latest changes with safety checks
-- **Smart validation**: Won't pull if working directory has uncommitted changes
-- **Confirmation dialogs**: Prevents accidental operations with detailed info
-- **Real-time feedback**: Shows operation progress and results
+## Features
 
-### Enhanced UX
-- **AJAX operations**: No full page reloads needed
-- **Operation status**: Success/error messages with command output
-- **Auto-refresh toggle**: Can disable 60-second auto-refresh
-- **Responsive design**: Works on mobile devices
-- **Loading states**: Button text changes during operations
+### 🔍 Visual Monitoring
+- **Real-time status** for all repositories in `~/git/`
+- **Branch information** with ahead/behind counts
+- **Uncommitted changes** detection and display
+- **Last commit details** (hash, message, author, relative time)
+- **GitHub integration** with issue counts (requires `gh` CLI)
+- **Auto-refresh** every 60 seconds with pause/resume controls
 
-### Safety Features
-- **Pre-pull validation**: Checks for uncommitted changes
-- **Confirmation modals**: Shows repo details before destructive operations
-- **Operation timeouts**: Git operations won't hang indefinitely
-- **Error handling**: Clear error messages with stderr output
+### 🎛️ Interactive Operations
+- **📡 Fetch Button**: Safe git fetch operation for each repository
+- **⬇️ Pull Button**: Git pull with intelligent safety checks
+- **Real-time feedback** with loading states and operation results
+- **AJAX updates** without page reloads
 
-## 🔧 Features
+### 🛡️ Safety Features
+- **Uncommitted change detection**: Won't allow pulls that could fail
+- **Confirmation dialogs**: Shows exactly what will happen before destructive operations
+- **Operation feedback**: Real-time status with stdout/stderr output
+- **Timeout protection**: Commands won't hang indefinitely
+- **Non-destructive defaults**: Fetch is always safe and encouraged
 
-### Repository Monitoring
-- **Real-time scanning** of `~/git/` directory
-- **Git status tracking**: uncommitted changes, ahead/behind counts
-- **Branch information** with current branch display
-- **Last commit details**: hash, message, author, time
-- **GitHub integration**: clickable links and open issue counts
-- **Clean/dirty indicators**: color-coded cards based on repo status
+### 📱 User Experience
+- **Modern dark theme** inspired by GitHub
+- **Mobile responsive** design that works on any device
+- **Toast notifications** for operation feedback
+- **Modal confirmations** with detailed repository information
+- **Keyboard shortcuts** (ESC to close modals)
+- **RESTful API** for programmatic access
 
-### Interactive Operations
-```bash
-# Available operations per repository:
-📡 Fetch   # Updates remote tracking branches (safe, read-only)
-⬇️ Pull    # Merges remote changes (requires clean working directory)
-```
+## Installation & Usage
 
-### Dashboard Stats
-- **Total repositories** count
-- **Repositories needing attention** (uncommitted, ahead, behind)
-- **Last updated timestamp**
-- **Auto-refresh status** (can be toggled)
-
-## 📖 Usage
-
-### Start the Dashboard
+### Quick Start
 ```bash
 cd ~/git/project-dashboard-v2
 ./dashboard.py
-
-# Or install globally:
-ln -s ~/git/project-dashboard-v2/dashboard.py ~/bin/project-dashboard-v2
-project-dashboard-v2
 ```
 
-**Default URL:** http://localhost:8766 (port 8766 to avoid conflicts with v1)
-
-### Git Operations Workflow
-
-1. **View Repository Status**: Cards show current state (clean/needs attention)
-
-2. **Fetch Updates**: Click "📡 Fetch" to update remote refs
-   - Safe operation (read-only)
-   - Updates ahead/behind counts
-   - No confirmation needed
-
-3. **Pull Changes**: Click "⬇️ Pull" to merge remote changes
-   - Shows confirmation dialog with repo details
-   - Validates working directory is clean
-   - Displays operation results with output
-
-4. **Monitor Results**: Success/error messages appear below repo cards
-
-### API Endpoints
-
-- `GET /` - Main dashboard interface
-- `GET /api/repos` - JSON repository data
-- `GET /api/repo/{name}/fetch` - Fetch repository updates
-- `POST /api/repo/{name}/pull` - Pull repository changes
-
-## 🎯 Use Cases
-
-### Daily Development Workflow
+### Options
 ```bash
-# Morning routine:
-1. Open dashboard (http://localhost:8766)
-2. Click "Fetch" on all repos to see what's new
-3. Review ahead/behind counts
-4. Pull updates for specific repos as needed
+./dashboard.py --port 8766 --git-dir ~/git
 ```
 
-### Team Collaboration
-- **Before starting work**: Fetch all repos to see latest remote state
-- **After remote changes**: Pull button shows exactly what will be merged
-- **Safety checks**: Won't accidentally lose uncommitted work
+### System Installation
+```bash
+# Create symlink for system-wide access
+ln -sf ~/git/project-dashboard-v2/dashboard.py ~/bin/project-dashboard-v2
+chmod +x ~/git/project-dashboard-v2/dashboard.py
+```
 
-### Repository Maintenance
-- **Quick health check**: See all repos needing attention at a glance
-- **Batch operations**: Fetch multiple repos quickly
-- **Status tracking**: Monitor which repos are falling behind
+### Access
+- **Web Interface**: http://localhost:8766
+- **JSON API**: http://localhost:8766/api/repos
+- **Individual Repo API**: http://localhost:8766/api/repo/{name}/fetch
 
-## 🔒 Safety Guarantees
+## API Endpoints
 
-### Pre-operation Validation
-- **Fetch operations**: Always safe (read-only remote updates)
-- **Pull operations**: Blocked if working directory has uncommitted changes
-- **Timeout protection**: Operations won't hang indefinitely (30s fetch, 60s pull)
+### GET /api/repos
+Returns comprehensive status for all repositories:
+```json
+{
+  "scan_time": "2026-02-19T07:00:00Z",
+  "git_dir": "/home/user/git",
+  "total_repos": 12,
+  "repos": [
+    {
+      "name": "my-project",
+      "branch": "main",
+      "has_uncommitted": true,
+      "uncommitted_count": 3,
+      "ahead": 2,
+      "behind": 1,
+      "last_commit": {
+        "hash": "c5ba60a",
+        "message": "Add new feature",
+        "author": "Developer",
+        "time": "2 hours ago"
+      },
+      "github_url": "https://github.com/user/my-project",
+      "open_issues": 5
+    }
+  ]
+}
+```
 
-### Confirmation Dialogs
-Before any pull operation, you'll see:
-- Repository name and current branch
-- Number of commits behind
-- Uncommitted changes count
-- Warning if pull will fail due to uncommitted changes
+### GET /api/repo/{name}/fetch
+Performs safe git fetch operation:
+```json
+{
+  "success": true,
+  "message": "Fetch completed successfully",
+  "output": "From github.com:user/repo\n   c5ba60a..f8d9e2b  main -> origin/main",
+  "repo_status": { /* updated repo status */ }
+}
+```
 
-### Error Handling
-- **Clear error messages** with specific failure reasons
-- **Command output display** (stdout/stderr) for debugging
-- **Operation recovery**: Failed operations don't break the interface
+### POST /api/repo/{name}/pull
+Performs git pull with safety checks:
+```json
+// Request body
+{
+  "confirmed": false  // Set to true to bypass safety checks
+}
 
-## 📊 Comparison with v1
+// Response (if confirmation needed)
+{
+  "success": false,
+  "need_confirmation": true,
+  "message": "Repository has 3 uncommitted changes",
+  "details": {
+    "branch": "main",
+    "uncommitted_count": 3,
+    "ahead": 2,
+    "behind": 1
+  },
+  "warning": "Pull may fail or create merge conflicts. Confirm to continue."
+}
+```
+
+## Safety Workflow
+
+### Fetch Operations (Always Safe)
+1. Click **📡 Fetch** button
+2. Repository fetches latest remote information
+3. UI updates with new ahead/behind counts
+4. No risk of conflicts or data loss
+
+### Pull Operations (With Safety Checks)
+1. Click **⬇️ Pull** button
+2. System checks for uncommitted changes
+3. If changes detected:
+   - Shows confirmation modal with repository details
+   - User can cancel or proceed with warning
+4. If safe or confirmed:
+   - Performs git pull
+   - Updates UI with results
+   - Shows success/error message
+
+## Technical Architecture
+
+### Backend
+- **Pure Python stdlib** HTTP server (no external dependencies)
+- **Threaded request handling** for concurrent operations
+- **Subprocess timeout protection** prevents hanging
+- **Working directory isolation** for git operations
+- **Comprehensive error handling** with user-friendly messages
+
+### Frontend
+- **Vanilla JavaScript** with modern async/await patterns
+- **CSS Grid layout** for responsive design
+- **Real-time AJAX** updates without page reloads
+- **Progressive enhancement** - works with JavaScript disabled
+- **Accessibility features** - keyboard navigation, screen reader friendly
+
+### Security Considerations
+- **No destructive operations** without explicit confirmation
+- **Timeout protection** prevents resource exhaustion
+- **Input validation** on repository names
+- **Safe subprocess execution** with proper escaping
+
+## Comparison with v1
 
 | Feature | v1 | v2 |
 |---------|----|----|
-| Repository monitoring | ✅ | ✅ |
-| GitHub integration | ✅ | ✅ |
-| Auto-refresh | ✅ | ✅ (toggleable) |
-| Interactive git ops | ❌ | ✅ |
-| Fetch button | ❌ | ✅ |
-| Pull button | ❌ | ✅ |
-| Confirmation dialogs | ❌ | ✅ |
-| Real-time updates | ❌ | ✅ |
-| Operation feedback | ❌ | ✅ |
-| Safety validation | ❌ | ✅ |
+| Repository Status | ✅ Read-only display | ✅ Read-only display |
+| Git Operations | ❌ Manual CLI required | ✅ Click to fetch/pull |
+| Safety Checks | ❌ None | ✅ Uncommitted change detection |
+| User Feedback | ❌ None | ✅ Real-time notifications |
+| Confirmations | ❌ None | ✅ Modal dialogs with details |
+| Mobile Support | ✅ Basic responsive | ✅ Enhanced mobile UX |
+| API Access | ✅ JSON endpoint | ✅ Enhanced RESTful API |
+| Port | 8765 | 8766 |
 
-## 🛠 Technical Details
+## Use Cases
 
-### Architecture
-- **Single-file Python application** using stdlib `http.server`
-- **Zero external dependencies** (pure Python 3.11+)
-- **Responsive web interface** with JavaScript AJAX calls
-- **RESTful API** for programmatic access
+### Daily Development Workflow
+1. **Morning routine**: Open dashboard to see overnight changes
+2. **Batch fetch**: Click fetch on all repositories to get latest remote info
+3. **Selective pull**: Only pull repositories that need updates
+4. **Status overview**: Quick visual check of all projects at once
 
-### Git Integration
-- **Safe subprocess calls** with timeout protection
-- **Working directory isolation** (changes back to original directory)
-- **Error code validation** with meaningful error messages
-- **Output capture** for user feedback
+### Team Collaboration
+- **Pre-standup**: Ensure all repositories are up-to-date
+- **Before deployment**: Verify clean state across all projects
+- **Code review prep**: Fetch latest changes before creating pull requests
 
-### Performance
-- **Parallel repository scanning** for fast initial load
-- **Incremental updates** via AJAX (no full page reloads)
-- **Efficient DOM updates** (only changes affected elements)
-- **Background auto-refresh** with minimal resource usage
+### Repository Maintenance
+- **Bulk operations**: Fetch all repositories efficiently
+- **Change detection**: Visual indication of uncommitted work
+- **Branch awareness**: Track feature branch status across projects
 
-## 🚀 Installation
+## Tech Stack
 
-### Standalone
-```bash
-cd ~/git/project-dashboard-v2
-./dashboard.py
-```
+- **Backend**: Python 3.8+ (stdlib only)
+- **Frontend**: Vanilla HTML5/CSS3/JavaScript (ES6+)
+- **Architecture**: Single-file HTTP server with embedded frontend
+- **Dependencies**: None (pure stdlib implementation)
+- **Performance**: Parallel git operations, efficient status caching
+- **Compatibility**: Works on any system with Python and git
 
-### Global Installation
-```bash
-# Create symlink for global access
-ln -s ~/git/project-dashboard-v2/dashboard.py ~/bin/project-dashboard-v2
+## Version History
 
-# Run from anywhere
-project-dashboard-v2
-```
-
-### Requirements
-- **Python 3.11+** (uses stdlib only)
-- **Git CLI** (for repository operations)
-- **gh CLI** (optional, for GitHub issue counts)
-
-## 🎨 UI/UX
-
-### Visual Indicators
-- **🟢 Green border**: Repository is clean and up-to-date
-- **🔴 Red border**: Repository needs attention (uncommitted/behind/ahead)
-- **Color-coded status badges**: Uncommitted (yellow), ahead (green), behind (red)
-- **Loading states**: Buttons show progress during operations
-- **Success/error messages**: Clear feedback with command output
-
-### Responsive Design
-- **Desktop**: Grid layout with multiple columns
-- **Mobile**: Single-column layout with touch-friendly buttons
-- **Dark theme**: GitHub-inspired color scheme
-- **Accessible**: High contrast, clear typography
+- **v2.0**: Interactive git operations with safety checks
+- **v1.0**: Read-only repository status dashboard
 
 ---
 
-**Version:** 2.0  
-**Compatible with:** Python 3.11+, All major browsers  
-**License:** MIT  
-**Author:** Built by Friday (nightly build 2026-02-16)
+**Port Conflict Note**: v2 runs on port 8766 to avoid conflicts with v1 (port 8765). Both can run simultaneously for comparison.
+
+*Part of the Friday nightly builds series - building useful tools one commit at a time.* 🌙

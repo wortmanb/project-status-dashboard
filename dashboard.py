@@ -1,269 +1,302 @@
 #!/usr/bin/env python3
 """
 Project Status Dashboard v2
-Enhanced version with interactive git operations (sync/fetch), AJAX updates, and better UX.
+Enhanced interactive dashboard with git operations
+
+Usage: python dashboard.py [--port 8766] [--git-dir ~/git]
 """
 
-import http.server
-import socketserver
-import json
-import subprocess
 import os
 import sys
+import json
+import subprocess
+import html
 import urllib.parse
-import time
 from datetime import datetime, timezone
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+import argparse
+import threading
+import time
 
-class ProjectDashboardHandler(http.server.SimpleHTTPRequestHandler):
-    def __init__(self, *args, **kwargs):
-        self.git_repos_path = Path.home() / "git"
-        super().__init__(*args, **kwargs)
-
-    def get_repo_info(self, repo_path):
-        """Get comprehensive git repository information."""
-        repo_name = repo_path.name
-        try:
-            os.chdir(repo_path)
-            
-            # Get current branch
-            branch = subprocess.check_output(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                text=True, stderr=subprocess.DEVNULL
-            ).strip()
-            
-            # Get status
-            status_output = subprocess.check_output(
-                ["git", "status", "--porcelain"],
-                text=True, stderr=subprocess.DEVNULL
-            )
-            uncommitted = len([line for line in status_output.split('\n') if line.strip()])
-            
-            # Get ahead/behind info
-            try:
-                ahead_behind = subprocess.check_output(
-                    ["git", "rev-list", "--left-right", "--count", f"{branch}...origin/{branch}"],
-                    text=True, stderr=subprocess.DEVNULL
-                ).strip().split()
-                ahead = int(ahead_behind[0]) if len(ahead_behind) >= 1 else 0
-                behind = int(ahead_behind[1]) if len(ahead_behind) >= 2 else 0
-            except (subprocess.CalledProcessError, IndexError, ValueError):
-                ahead, behind = 0, 0
-            
-            # Get last commit info
-            try:
-                last_commit = subprocess.check_output([
-                    "git", "log", "-1", "--pretty=format:%h|%s|%an|%ar"
-                ], text=True, stderr=subprocess.DEVNULL).strip().split('|')
-                commit_hash = last_commit[0] if len(last_commit) > 0 else ""
-                commit_message = last_commit[1] if len(last_commit) > 1 else ""
-                commit_author = last_commit[2] if len(last_commit) > 2 else ""
-                commit_time = last_commit[3] if len(last_commit) > 3 else ""
-            except (subprocess.CalledProcessError, IndexError):
-                commit_hash, commit_message, commit_author, commit_time = "", "", "", ""
-            
-            # Check if remote exists
-            try:
-                remote_url = subprocess.check_output(
-                    ["git", "remote", "get-url", "origin"],
-                    text=True, stderr=subprocess.DEVNULL
-                ).strip()
-                has_remote = True
-                
-                # Extract GitHub info for links
-                github_info = None
-                if "github.com" in remote_url:
-                    if remote_url.startswith("git@"):
-                        # git@github.com:user/repo.git -> user/repo
-                        github_path = remote_url.split(":")[-1].replace(".git", "")
-                    else:
-                        # https://github.com/user/repo.git -> user/repo
-                        github_path = "/".join(remote_url.split("/")[-2:]).replace(".git", "")
-                    
-                    github_info = {
-                        "path": github_path,
-                        "url": f"https://github.com/{github_path}"
-                    }
-                    
-                    # Get open issues count (if gh is available)
-                    try:
-                        issues_output = subprocess.check_output([
-                            "gh", "issue", "list", "--repo", github_path, "--state", "open", "--json", "number"
-                        ], text=True, stderr=subprocess.DEVNULL)
-                        issues_data = json.loads(issues_output)
-                        github_info["open_issues"] = len(issues_data)
-                    except (subprocess.CalledProcessError, json.JSONDecodeError, FileNotFoundError):
-                        github_info["open_issues"] = None
-            except subprocess.CalledProcessError:
-                has_remote = False
-                github_info = None
-            
-            # Check if repo is dirty or needs attention
-            needs_attention = uncommitted > 0 or ahead > 0 or behind > 0
-            
-            return {
-                "name": repo_name,
-                "path": str(repo_path),
-                "branch": branch,
-                "uncommitted": uncommitted,
-                "ahead": ahead,
-                "behind": behind,
-                "needs_attention": needs_attention,
-                "has_remote": has_remote,
-                "last_commit": {
-                    "hash": commit_hash,
-                    "message": commit_message,
-                    "author": commit_author,
-                    "time": commit_time
-                },
-                "github": github_info
-            }
+class RepoInfo:
+    def __init__(self, path):
+        self.path = Path(path)
+        self.name = self.path.name
+        self.status = self._get_status()
         
-        except Exception as e:
+    def _get_status(self):
+        """Get comprehensive repo status"""
+        if not (self.path / '.git').exists():
             return {
-                "name": repo_name,
-                "path": str(repo_path),
-                "error": str(e),
-                "needs_attention": True
+                'error': 'Not a git repository',
+                'is_repo': False
             }
-
-    def get_all_repos(self):
-        """Scan for all git repositories."""
-        repos = []
-        try:
-            for item in self.git_repos_path.iterdir():
-                if item.is_dir() and (item / ".git").exists():
-                    repo_info = self.get_repo_info(item)
-                    repos.append(repo_info)
-        except FileNotFoundError:
-            pass
+            
+        status = {
+            'is_repo': True,
+            'path': str(self.path),
+            'name': self.name
+        }
         
-        # Sort by needs_attention (true first), then by name
-        repos.sort(key=lambda x: (not x.get("needs_attention", False), x.get("name", "")))
-        return repos
-
-    def perform_git_operation(self, repo_path, operation):
-        """Perform git operation (fetch or pull) on a repository."""
         try:
-            os.chdir(repo_path)
+            os.chdir(self.path)
             
-            if operation == "fetch":
-                result = subprocess.run(
-                    ["git", "fetch", "origin"],
-                    capture_output=True, text=True, timeout=30
-                )
-                return {
-                    "success": result.returncode == 0,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "operation": "fetch"
-                }
+            # Current branch
+            result = subprocess.run(['git', 'branch', '--show-current'], 
+                                 capture_output=True, text=True, timeout=5)
+            status['branch'] = result.stdout.strip() if result.returncode == 0 else 'unknown'
             
-            elif operation == "pull":
-                # Check if working directory is clean
-                status_result = subprocess.run(
-                    ["git", "status", "--porcelain"],
-                    capture_output=True, text=True
-                )
-                
-                if status_result.stdout.strip():
-                    return {
-                        "success": False,
-                        "error": "Working directory has uncommitted changes. Please commit or stash them first.",
-                        "operation": "pull"
-                    }
-                
-                result = subprocess.run(
-                    ["git", "pull", "origin"],
-                    capture_output=True, text=True, timeout=60
-                )
-                
-                return {
-                    "success": result.returncode == 0,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "operation": "pull"
-                }
-            
+            # Uncommitted changes
+            result = subprocess.run(['git', 'status', '--porcelain'], 
+                                 capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                changes = result.stdout.strip().split('\n') if result.stdout.strip() else []
+                status['uncommitted_count'] = len(changes)
+                status['has_uncommitted'] = len(changes) > 0
+                status['uncommitted_files'] = changes[:5]  # First 5 for preview
             else:
-                return {"success": False, "error": f"Unknown operation: {operation}"}
-        
+                status['uncommitted_count'] = 0
+                status['has_uncommitted'] = False
+                status['uncommitted_files'] = []
+            
+            # Remote tracking
+            result = subprocess.run(['git', 'rev-parse', '--abbrev-ref', '@{upstream}'], 
+                                 capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                upstream = result.stdout.strip()
+                status['upstream'] = upstream
+                
+                # Fetch to get latest remote info (this is safe)
+                subprocess.run(['git', 'fetch', '--dry-run'], 
+                             capture_output=True, timeout=10)
+                
+                # Ahead/behind
+                result = subprocess.run(['git', 'rev-list', '--left-right', '--count', f'HEAD...{upstream}'], 
+                                     capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    counts = result.stdout.strip().split('\t')
+                    status['ahead'] = int(counts[0]) if len(counts) > 0 else 0
+                    status['behind'] = int(counts[1]) if len(counts) > 1 else 0
+                else:
+                    status['ahead'] = 0
+                    status['behind'] = 0
+            else:
+                status['upstream'] = None
+                status['ahead'] = 0
+                status['behind'] = 0
+            
+            # Last commit
+            result = subprocess.run(['git', 'log', '-1', '--format=%H|%s|%an|%ar'], 
+                                 capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                parts = result.stdout.strip().split('|')
+                status['last_commit'] = {
+                    'hash': parts[0][:8] if len(parts) > 0 else '',
+                    'message': parts[1] if len(parts) > 1 else '',
+                    'author': parts[2] if len(parts) > 2 else '',
+                    'time': parts[3] if len(parts) > 3 else ''
+                }
+            else:
+                status['last_commit'] = None
+                
+            # GitHub info (if gh CLI is available)
+            try:
+                result = subprocess.run(['gh', 'repo', 'view', '--json', 'url,openIssues'], 
+                                     capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    gh_info = json.loads(result.stdout)
+                    status['github_url'] = gh_info.get('url', '')
+                    status['open_issues'] = gh_info.get('openIssues', {}).get('totalCount', 0)
+            except (subprocess.TimeoutExpired, json.JSONDecodeError, FileNotFoundError):
+                pass
+                
         except subprocess.TimeoutExpired:
-            return {"success": False, "error": f"Operation {operation} timed out"}
+            status['error'] = 'Git command timed out'
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            status['error'] = str(e)
+            
+        return status
 
+class DashboardHandler(BaseHTTPRequestHandler):
+    def __init__(self, git_dir, *args, **kwargs):
+        self.git_dir = Path(git_dir)
+        super().__init__(*args, **kwargs)
+    
     def do_GET(self):
-        """Handle GET requests."""
-        parsed_path = urllib.parse.urlparse(self.path)
-        path = parsed_path.path
-        
-        if path == "/" or path == "/index.html":
-            self.serve_dashboard()
-        elif path == "/api/repos":
-            self.serve_repos_json()
-        elif path.startswith("/api/repo/") and "/fetch" in path:
-            repo_name = path.split("/")[3]
-            self.handle_git_operation(repo_name, "fetch")
+        """Handle GET requests"""
+        if self.path == '/':
+            self._send_dashboard()
+        elif self.path == '/api/repos':
+            self._send_repos_json()
+        elif self.path.startswith('/api/repo/') and self.path.endswith('/fetch'):
+            # Safe operation - can be GET
+            repo_name = self.path.split('/')[3]
+            self._handle_fetch(repo_name)
         else:
-            self.send_error(404, "Not Found")
-
+            self._send_404()
+    
     def do_POST(self):
-        """Handle POST requests for git operations."""
-        parsed_path = urllib.parse.urlparse(self.path)
-        path = parsed_path.path
-        
-        if path.startswith("/api/repo/") and "/pull" in path:
-            repo_name = path.split("/")[3]
-            self.handle_git_operation(repo_name, "pull")
+        """Handle POST requests"""
+        if self.path.startswith('/api/repo/') and '/pull' in self.path:
+            repo_name = self.path.split('/')[3]
+            
+            # Read POST body for confirmation
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length:
+                post_data = self.rfile.read(content_length).decode('utf-8')
+                try:
+                    data = json.loads(post_data)
+                    confirmed = data.get('confirmed', False)
+                except json.JSONDecodeError:
+                    confirmed = False
+            else:
+                confirmed = False
+            
+            self._handle_pull(repo_name, confirmed)
         else:
-            self.send_error(404, "Not Found")
-
-    def handle_git_operation(self, repo_name, operation):
-        """Handle git fetch/pull operations."""
-        repo_path = self.git_repos_path / repo_name
+            self._send_404()
+    
+    def _send_dashboard(self):
+        """Send the main dashboard HTML"""
+        html_content = self._generate_html()
+        self._send_response(200, html_content, 'text/html')
+    
+    def _send_repos_json(self):
+        """Send repository information as JSON"""
+        repos_data = self._get_repos_data()
+        self._send_response(200, json.dumps(repos_data, indent=2), 'application/json')
+    
+    def _handle_fetch(self, repo_name):
+        """Handle git fetch operation"""
+        repo_path = self.git_dir / repo_name
+        if not repo_path.exists():
+            self._send_error_json(404, f"Repository {repo_name} not found")
+            return
+            
+        try:
+            os.chdir(repo_path)
+            result = subprocess.run(['git', 'fetch'], 
+                                 capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                # Get updated status
+                repo = RepoInfo(repo_path)
+                response = {
+                    'success': True,
+                    'message': 'Fetch completed successfully',
+                    'output': result.stdout + result.stderr,
+                    'repo_status': repo.status
+                }
+            else:
+                response = {
+                    'success': False,
+                    'message': 'Fetch failed',
+                    'output': result.stdout + result.stderr
+                }
+                
+        except subprocess.TimeoutExpired:
+            response = {
+                'success': False,
+                'message': 'Fetch timed out'
+            }
+        except Exception as e:
+            response = {
+                'success': False,
+                'message': f'Error during fetch: {str(e)}'
+            }
         
-        if not repo_path.exists() or not (repo_path / ".git").exists():
-            self.send_json_response({"success": False, "error": "Repository not found"})
+        self._send_response(200, json.dumps(response), 'application/json')
+    
+    def _handle_pull(self, repo_name, confirmed=False):
+        """Handle git pull operation with safety checks"""
+        repo_path = self.git_dir / repo_name
+        if not repo_path.exists():
+            self._send_error_json(404, f"Repository {repo_name} not found")
             return
         
-        result = self.perform_git_operation(str(repo_path), operation)
+        try:
+            os.chdir(repo_path)
+            repo = RepoInfo(repo_path)
+            
+            # Safety check: uncommitted changes
+            if not confirmed and repo.status.get('has_uncommitted', False):
+                response = {
+                    'success': False,
+                    'need_confirmation': True,
+                    'message': f'Repository has {repo.status["uncommitted_count"]} uncommitted changes',
+                    'details': {
+                        'branch': repo.status.get('branch', 'unknown'),
+                        'uncommitted_count': repo.status.get('uncommitted_count', 0),
+                        'ahead': repo.status.get('ahead', 0),
+                        'behind': repo.status.get('behind', 0)
+                    },
+                    'warning': 'Pull may fail or create merge conflicts. Confirm to continue.'
+                }
+                self._send_response(200, json.dumps(response), 'application/json')
+                return
+            
+            # Perform the pull
+            result = subprocess.run(['git', 'pull'], 
+                                 capture_output=True, text=True, timeout=60)
+            
+            if result.returncode == 0:
+                # Get updated status
+                updated_repo = RepoInfo(repo_path)
+                response = {
+                    'success': True,
+                    'message': 'Pull completed successfully',
+                    'output': result.stdout + result.stderr,
+                    'repo_status': updated_repo.status
+                }
+            else:
+                response = {
+                    'success': False,
+                    'message': 'Pull failed',
+                    'output': result.stdout + result.stderr
+                }
+                
+        except subprocess.TimeoutExpired:
+            response = {
+                'success': False,
+                'message': 'Pull timed out'
+            }
+        except Exception as e:
+            response = {
+                'success': False,
+                'message': f'Error during pull: {str(e)}'
+            }
         
-        # Get updated repo info
-        if result["success"]:
-            updated_info = self.get_repo_info(repo_path)
-            result["repo_info"] = updated_info
+        self._send_response(200, json.dumps(response), 'application/json')
+    
+    def _get_repos_data(self):
+        """Scan git directory and get repository information"""
+        repos = []
         
-        self.send_json_response(result)
-
-    def serve_repos_json(self):
-        """Serve repository data as JSON."""
-        repos = self.get_all_repos()
-        self.send_json_response({
-            "repos": repos,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "total": len(repos),
-            "needs_attention": len([r for r in repos if r.get("needs_attention", False)])
-        })
-
-    def send_json_response(self, data):
-        """Send JSON response."""
-        self.send_response(200)
-        self.send_header("Content-type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps(data, indent=2).encode())
-
-    def serve_dashboard(self):
-        """Serve the main dashboard HTML."""
-        html = self.get_dashboard_html()
-        self.send_response(200)
-        self.send_header("Content-type", "text/html")
-        self.end_headers()
-        self.wfile.write(html.encode())
-
-    def get_dashboard_html(self):
-        """Generate the dashboard HTML with enhanced interactivity."""
+        if not self.git_dir.exists():
+            return {'error': f'Git directory {self.git_dir} does not exist', 'repos': []}
+        
+        for item in sorted(self.git_dir.iterdir()):
+            if item.is_dir() and not item.name.startswith('.'):
+                try:
+                    repo = RepoInfo(item)
+                    repos.append(repo.status)
+                except Exception as e:
+                    repos.append({
+                        'name': item.name,
+                        'error': str(e),
+                        'is_repo': False
+                    })
+        
+        return {
+            'scan_time': datetime.now(timezone.utc).isoformat(),
+            'git_dir': str(self.git_dir),
+            'total_repos': len([r for r in repos if r.get('is_repo', False)]),
+            'repos': repos
+        }
+    
+    def _generate_html(self):
+        """Generate the dashboard HTML"""
         return '''<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -272,133 +305,115 @@ class ProjectDashboardHandler(http.server.SimpleHTTPRequestHandler):
     <title>Project Status Dashboard v2</title>
     <style>
         body {
-            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
             margin: 0;
             padding: 20px;
             background: #0d1117;
-            color: #c9d1d9;
+            color: #e6edf3;
             line-height: 1.6;
         }
         
         .header {
             text-align: center;
             margin-bottom: 30px;
-            border-bottom: 2px solid #21262d;
-            padding-bottom: 20px;
         }
         
         .header h1 {
-            color: #58a6ff;
             margin: 0;
-            font-size: 2.2em;
+            color: #7c3aed;
+            font-size: 2.5em;
+            font-weight: 700;
         }
         
-        .stats {
-            display: flex;
-            justify-content: center;
-            gap: 30px;
-            margin: 20px 0;
-            flex-wrap: wrap;
-        }
-        
-        .stat {
-            text-align: center;
-            padding: 15px 25px;
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 8px;
-        }
-        
-        .stat-value {
-            font-size: 2em;
-            font-weight: bold;
-            margin: 0;
-        }
-        
-        .stat-label {
-            font-size: 0.9em;
+        .header p {
             color: #8b949e;
-            margin: 5px 0 0 0;
+            margin: 10px 0;
         }
         
         .controls {
-            text-align: center;
-            margin: 20px 0;
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
         }
         
         .btn {
-            background: #238636;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            margin: 0 5px;
+            padding: 8px 16px;
+            border: 1px solid #30363d;
+            background: #21262d;
+            color: #e6edf3;
+            text-decoration: none;
             border-radius: 6px;
             cursor: pointer;
-            font-family: inherit;
             font-size: 14px;
-            transition: background 0.2s;
+            transition: all 0.2s;
         }
         
         .btn:hover {
+            background: #30363d;
+            border-color: #8b949e;
+        }
+        
+        .btn.primary {
+            background: #238636;
+            border-color: #238636;
+        }
+        
+        .btn.primary:hover {
             background: #2ea043;
         }
         
-        .btn:disabled {
-            background: #484f58;
-            cursor: not-allowed;
-        }
-        
-        .btn-secondary {
-            background: #373e47;
-        }
-        
-        .btn-secondary:hover {
-            background: #444c56;
-        }
-        
-        .btn-danger {
+        .btn.danger {
             background: #da3633;
+            border-color: #da3633;
         }
         
-        .btn-danger:hover {
+        .btn.danger:hover {
             background: #f85149;
         }
         
-        .repos-grid {
+        .btn:disabled {
+            background: #161b22;
+            color: #6e7681;
+            cursor: not-allowed;
+            opacity: 0.6;
+        }
+        
+        .repos {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
             gap: 20px;
-            margin-top: 30px;
+            max-width: 1400px;
+            margin: 0 auto;
         }
         
-        .repo-card {
+        .repo {
             background: #161b22;
             border: 1px solid #30363d;
             border-radius: 8px;
             padding: 20px;
-            transition: border-color 0.2s, background 0.2s;
+            transition: border-color 0.2s;
         }
         
-        .repo-card.needs-attention {
-            border-left: 4px solid #f85149;
-        }
-        
-        .repo-card.clean {
-            border-left: 4px solid #238636;
+        .repo:hover {
+            border-color: #8b949e;
         }
         
         .repo-header {
             display: flex;
             justify-content: space-between;
-            align-items: center;
+            align-items: flex-start;
             margin-bottom: 15px;
+            flex-wrap: wrap;
+            gap: 10px;
         }
         
         .repo-name {
-            font-size: 1.3em;
-            font-weight: bold;
-            margin: 0;
+            font-size: 18px;
+            font-weight: 600;
             color: #58a6ff;
+            margin: 0;
         }
         
         .repo-actions {
@@ -406,511 +421,514 @@ class ProjectDashboardHandler(http.server.SimpleHTTPRequestHandler):
             gap: 8px;
         }
         
-        .btn-small {
-            padding: 6px 12px;
+        .btn-sm {
+            padding: 4px 8px;
             font-size: 12px;
-            min-width: 60px;
+            min-width: 50px;
         }
         
-        .repo-info {
-            margin: 10px 0;
+        .status-grid {
+            display: grid;
+            grid-template-columns: auto 1fr;
+            gap: 8px 15px;
+            margin-bottom: 15px;
         }
         
-        .repo-info div {
-            margin: 5px 0;
-        }
-        
-        .branch {
-            color: #a5a5a5;
-        }
-        
-        .status-item {
-            display: inline-block;
-            margin-right: 15px;
-            padding: 3px 8px;
-            border-radius: 4px;
-            font-size: 0.9em;
-        }
-        
-        .uncommitted {
-            background: #533516;
-            color: #f0ad4e;
-        }
-        
-        .ahead {
-            background: #0f5132;
-            color: #75b798;
-        }
-        
-        .behind {
-            background: #58151c;
-            color: #f47c7c;
-        }
-        
-        .clean {
-            background: #0f5132;
-            color: #75b798;
-        }
-        
-        .last-commit {
-            margin-top: 15px;
-            padding-top: 15px;
-            border-top: 1px solid #30363d;
-            font-size: 0.9em;
+        .status-label {
             color: #8b949e;
+            font-size: 13px;
+        }
+        
+        .status-value {
+            font-size: 13px;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            margin-left: 5px;
+        }
+        
+        .badge.clean { background: #1f6332; color: #7ee787; }
+        .badge.dirty { background: #914d14; color: #ffab70; }
+        .badge.ahead { background: #1158c7; color: #79c0ff; }
+        .badge.behind { background: #ad5b00; color: #ffa657; }
+        .badge.issues { background: #8a4d76; color: #f2cc60; }
+        
+        .commit-info {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 10px;
+            margin-top: 10px;
+            font-size: 12px;
         }
         
         .commit-hash {
-            font-family: monospace;
-            background: #21262d;
-            padding: 2px 6px;
-            border-radius: 4px;
+            color: #8b949e;
+            font-family: 'SF Mono', Consolas, monospace;
         }
         
-        .github-link {
-            color: #58a6ff;
-            text-decoration: none;
-            margin-left: 10px;
-        }
-        
-        .github-link:hover {
-            text-decoration: underline;
-        }
-        
-        .open-issues {
+        .error {
             color: #f85149;
-            font-weight: bold;
+            background: #251b1b;
+            padding: 10px;
+            border-radius: 6px;
+            border-left: 3px solid #f85149;
         }
         
         .loading {
             text-align: center;
-            padding: 50px;
+            padding: 40px;
             color: #8b949e;
         }
         
-        .error {
-            background: #58151c;
+        .success-message, .error-message {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 12px 20px;
+            border-radius: 6px;
+            z-index: 1000;
+            max-width: 400px;
+            animation: slideIn 0.3s ease-out;
+        }
+        
+        .success-message {
+            background: #1f6332;
+            color: #7ee787;
+            border: 1px solid #238636;
+        }
+        
+        .error-message {
+            background: #461e20;
             color: #f85149;
-            padding: 15px;
-            border-radius: 6px;
-            margin: 20px 0;
+            border: 1px solid #da3633;
         }
         
-        .success {
-            background: #0f5132;
-            color: #75b798;
-            padding: 15px;
-            border-radius: 6px;
-            margin: 20px 0;
+        @keyframes slideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
         }
         
-        .operation-output {
-            background: #21262d;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 12px;
-            margin: 10px 0;
-            font-family: monospace;
-            font-size: 0.85em;
-            white-space: pre-wrap;
-            max-height: 200px;
-            overflow-y: auto;
-        }
-        
-        .timestamp {
-            text-align: center;
-            color: #8b949e;
-            font-size: 0.9em;
-            margin-top: 30px;
-        }
-        
-        /* Modal styles */
         .modal {
             display: none;
             position: fixed;
-            z-index: 1000;
-            left: 0;
             top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.8);
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            z-index: 2000;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .modal.show {
+            display: flex;
         }
         
         .modal-content {
-            background-color: #161b22;
-            margin: 5% auto;
-            padding: 30px;
+            background: #161b22;
             border: 1px solid #30363d;
             border-radius: 8px;
+            padding: 24px;
+            max-width: 500px;
             width: 90%;
-            max-width: 600px;
         }
         
         .modal h3 {
             margin-top: 0;
-            color: #58a6ff;
+            color: #f0ad4e;
         }
         
-        .modal-buttons {
-            text-align: right;
+        .modal-actions {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
             margin-top: 20px;
         }
         
         @media (max-width: 768px) {
-            .repos-grid {
+            .repos {
                 grid-template-columns: 1fr;
+                gap: 15px;
             }
             
-            .stats {
+            .repo {
+                padding: 15px;
+            }
+            
+            .controls {
                 flex-direction: column;
                 align-items: center;
-                gap: 15px;
+            }
+            
+            .repo-actions {
+                width: 100%;
+                justify-content: center;
             }
         }
     </style>
 </head>
 <body>
     <div class="header">
-        <h1>🔧 Project Status Dashboard v2</h1>
-        <div class="stats" id="stats">
-            <div class="stat">
-                <div class="stat-value" id="total-repos">-</div>
-                <div class="stat-label">Total Repositories</div>
-            </div>
-            <div class="stat">
-                <div class="stat-value" id="needs-attention">-</div>
-                <div class="stat-label">Need Attention</div>
-            </div>
-        </div>
-        <div class="controls">
-            <button class="btn" onclick="refreshAll()" id="refresh-btn">🔄 Refresh All</button>
-            <button class="btn btn-secondary" onclick="toggleAutoRefresh()" id="auto-refresh-btn">⏰ Auto-Refresh: ON</button>
-        </div>
+        <h1>🐱 Project Dashboard v2</h1>
+        <p>Interactive Git Repository Status</p>
+        <div id="last-update">Loading...</div>
     </div>
-
-    <div id="repos-container" class="repos-grid">
-        <div class="loading">Loading repositories...</div>
+    
+    <div class="controls">
+        <button class="btn" onclick="refreshData()">🔄 Refresh</button>
+        <button class="btn" id="auto-refresh-btn" onclick="toggleAutoRefresh()">⏸️ Pause Auto-refresh</button>
+        <a class="btn" href="/api/repos" target="_blank">📋 JSON API</a>
     </div>
-
-    <div class="timestamp" id="timestamp"></div>
-
+    
+    <div id="repos-container" class="loading">
+        Loading repositories...
+    </div>
+    
     <!-- Confirmation Modal -->
-    <div id="confirmModal" class="modal">
+    <div id="confirmation-modal" class="modal">
         <div class="modal-content">
-            <h3 id="modal-title">Confirm Action</h3>
-            <p id="modal-message"></p>
+            <h3>⚠️ Confirm Git Pull</h3>
             <div id="modal-details"></div>
-            <div class="modal-buttons">
-                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-                <button class="btn btn-danger" onclick="confirmAction()" id="confirm-btn">Proceed</button>
+            <p id="modal-warning"></p>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal()">Cancel</button>
+                <button class="btn danger" id="confirm-pull-btn">Pull Anyway</button>
             </div>
         </div>
     </div>
-
+    
     <script>
         let autoRefreshInterval;
         let autoRefreshEnabled = true;
-        let pendingAction = null;
-
-        async function fetchRepos() {
-            try {
-                const response = await fetch('/api/repos');
-                const data = await response.json();
-                return data;
-            } catch (error) {
-                console.error('Failed to fetch repos:', error);
-                return null;
-            }
+        
+        // Auto-refresh every 60 seconds
+        function startAutoRefresh() {
+            if (autoRefreshInterval) clearInterval(autoRefreshInterval);
+            autoRefreshInterval = setInterval(refreshData, 60000);
         }
-
-        async function performGitOperation(repoName, operation) {
-            const url = `/api/repo/${repoName}/${operation}`;
-            const method = operation === 'pull' ? 'POST' : 'GET';
-            
-            try {
-                const response = await fetch(url, { method });
-                return await response.json();
-            } catch (error) {
-                return { success: false, error: error.message };
-            }
-        }
-
-        function showConfirmationModal(title, message, details, action) {
-            document.getElementById('modal-title').textContent = title;
-            document.getElementById('modal-message').textContent = message;
-            document.getElementById('modal-details').innerHTML = details || '';
-            document.getElementById('confirmModal').style.display = 'block';
-            pendingAction = action;
-        }
-
-        function closeModal() {
-            document.getElementById('confirmModal').style.display = 'none';
-            pendingAction = null;
-        }
-
-        async function confirmAction() {
-            if (pendingAction) {
-                closeModal();
-                await pendingAction();
-            }
-        }
-
-        function updateRepoCard(repo, result) {
-            const card = document.querySelector(`[data-repo="${repo}"]`);
-            if (!card) return;
-            
-            const actionsDiv = card.querySelector('.repo-actions');
-            
-            if (result.success) {
-                // Show success message
-                const successDiv = document.createElement('div');
-                successDiv.className = 'success';
-                successDiv.textContent = `✅ ${result.operation} completed successfully`;
-                
-                if (result.stdout) {
-                    const outputDiv = document.createElement('div');
-                    outputDiv.className = 'operation-output';
-                    outputDiv.textContent = result.stdout;
-                    successDiv.appendChild(outputDiv);
-                }
-                
-                card.appendChild(successDiv);
-                setTimeout(() => successDiv.remove(), 5000);
-                
-                // Update repo info if available
-                if (result.repo_info) {
-                    location.reload(); // Simple refresh for now
-                }
+        
+        function toggleAutoRefresh() {
+            const btn = document.getElementById('auto-refresh-btn');
+            if (autoRefreshEnabled) {
+                clearInterval(autoRefreshInterval);
+                btn.textContent = '▶️ Resume Auto-refresh';
+                autoRefreshEnabled = false;
             } else {
-                // Show error message
-                const errorDiv = document.createElement('div');
-                errorDiv.className = 'error';
-                errorDiv.textContent = `❌ ${result.operation || 'Operation'} failed: ${result.error}`;
-                
-                if (result.stderr) {
-                    const outputDiv = document.createElement('div');
-                    outputDiv.className = 'operation-output';
-                    outputDiv.textContent = result.stderr;
-                    errorDiv.appendChild(outputDiv);
-                }
-                
-                card.appendChild(errorDiv);
-                setTimeout(() => errorDiv.remove(), 8000);
+                startAutoRefresh();
+                btn.textContent = '⏸️ Pause Auto-refresh';
+                autoRefreshEnabled = true;
             }
-            
-            // Re-enable buttons
-            actionsDiv.querySelectorAll('button').forEach(btn => {
-                btn.disabled = false;
-                btn.textContent = btn.textContent.replace('...', '');
-            });
         }
-
-        async function fetchRepo(repoName) {
-            const card = document.querySelector(`[data-repo="${repoName}"]`);
-            const btn = card.querySelector('.fetch-btn');
-            
-            btn.disabled = true;
-            btn.textContent = '📡 Fetching...';
-            
-            const result = await performGitOperation(repoName, 'fetch');
-            updateRepoCard(repoName, result);
+        
+        function refreshData() {
+            fetch('/api/repos')
+                .then(response => response.json())
+                .then(data => {
+                    renderRepos(data);
+                    document.getElementById('last-update').textContent = 
+                        `Last update: ${new Date().toLocaleTimeString()}`;
+                })
+                .catch(error => {
+                    console.error('Error fetching data:', error);
+                    showMessage('Error fetching repository data', 'error');
+                });
         }
-
-        async function pullRepo(repoName, repoInfo) {
-            const hasUncommitted = repoInfo.uncommitted > 0;
-            const isBehind = repoInfo.behind > 0;
-            
-            if (!isBehind) {
-                alert(`Repository "${repoName}" is already up to date.`);
-                return;
-            }
-            
-            let warningDetails = '';
-            if (hasUncommitted) {
-                warningDetails = '<div class="error">⚠️ This repository has uncommitted changes. The pull will fail.</div>';
-            }
-            
-            const details = `
-                <div style="margin: 15px 0;">
-                    <strong>Repository:</strong> ${repoName}<br>
-                    <strong>Current Branch:</strong> ${repoInfo.branch}<br>
-                    <strong>Behind by:</strong> ${repoInfo.behind} commit(s)<br>
-                    <strong>Uncommitted changes:</strong> ${repoInfo.uncommitted}
-                </div>
-                ${warningDetails}
-            `;
-            
-            showConfirmationModal(
-                'Confirm Git Pull',
-                `Are you sure you want to pull the latest changes for "${repoName}"?`,
-                details,
-                async () => {
-                    const card = document.querySelector(`[data-repo="${repoName}"]`);
-                    const btn = card.querySelector('.pull-btn');
-                    
-                    btn.disabled = true;
-                    btn.textContent = '⬇️ Pulling...';
-                    
-                    const result = await performGitOperation(repoName, 'pull');
-                    updateRepoCard(repoName, result);
-                }
-            );
-        }
-
+        
         function renderRepos(data) {
-            if (!data || !data.repos) return;
-            
             const container = document.getElementById('repos-container');
             
-            if (data.repos.length === 0) {
-                container.innerHTML = '<div class="loading">No git repositories found in ~/git/</div>';
+            if (data.error) {
+                container.innerHTML = `<div class="error">${data.error}</div>`;
                 return;
             }
             
-            const html = data.repos.map(repo => {
-                if (repo.error) {
+            if (!data.repos || data.repos.length === 0) {
+                container.innerHTML = '<div class="error">No repositories found</div>';
+                return;
+            }
+            
+            const repoHtml = data.repos.map(repo => {
+                if (!repo.is_repo) {
                     return `
-                        <div class="repo-card needs-attention" data-repo="${repo.name}">
+                        <div class="repo">
                             <div class="repo-header">
-                                <h3 class="repo-name">❌ ${repo.name}</h3>
+                                <h3 class="repo-name">${repo.name}</h3>
                             </div>
-                            <div class="error">Error: ${repo.error}</div>
+                            <div class="error">${repo.error || 'Not a git repository'}</div>
                         </div>
                     `;
                 }
                 
-                const statusItems = [];
-                if (repo.uncommitted > 0) {
-                    statusItems.push(`<span class="status-item uncommitted">📝 ${repo.uncommitted} uncommitted</span>`);
-                }
-                if (repo.ahead > 0) {
-                    statusItems.push(`<span class="status-item ahead">⬆️ ${repo.ahead} ahead</span>`);
-                }
-                if (repo.behind > 0) {
-                    statusItems.push(`<span class="status-item behind">⬇️ ${repo.behind} behind</span>`);
-                }
-                if (statusItems.length === 0) {
-                    statusItems.push(`<span class="status-item clean">✅ Clean</span>`);
-                }
+                const badges = [];
+                if (repo.has_uncommitted) badges.push(`<span class="badge dirty">${repo.uncommitted_count} uncommitted</span>`);
+                if (repo.ahead > 0) badges.push(`<span class="badge ahead">${repo.ahead} ahead</span>`);
+                if (repo.behind > 0) badges.push(`<span class="badge behind">${repo.behind} behind</span>`);
+                if (repo.open_issues > 0) badges.push(`<span class="badge issues">${repo.open_issues} issues</span>`);
+                if (!repo.has_uncommitted && repo.ahead === 0 && repo.behind === 0) badges.push(`<span class="badge clean">Clean</span>`);
                 
-                const githubLink = repo.github ? 
-                    `<a href="${repo.github.url}" target="_blank" class="github-link" title="Open on GitHub">🔗 GitHub</a>
-                     ${repo.github.open_issues !== null ? `<span class="open-issues">(${repo.github.open_issues} open issues)</span>` : ''}` : '';
-                
-                const lastCommit = repo.last_commit ? `
-                    <div class="last-commit">
-                        <strong>Last commit:</strong> 
-                        <span class="commit-hash">${repo.last_commit.hash}</span>
-                        ${repo.last_commit.message} 
-                        <br><small>by ${repo.last_commit.author} • ${repo.last_commit.time}</small>
+                const commitInfo = repo.last_commit ? `
+                    <div class="commit-info">
+                        <div><span class="commit-hash">${repo.last_commit.hash}</span> ${repo.last_commit.message}</div>
+                        <div style="color: #8b949e; margin-top: 5px;">by ${repo.last_commit.author} • ${repo.last_commit.time}</div>
                     </div>
                 ` : '';
                 
-                const canPull = repo.has_remote && repo.behind > 0;
-                const canFetch = repo.has_remote;
+                const githubLink = repo.github_url ? `<a class="btn btn-sm" href="${repo.github_url}" target="_blank">GitHub</a>` : '';
                 
                 return `
-                    <div class="repo-card ${repo.needs_attention ? 'needs-attention' : 'clean'}" data-repo="${repo.name}">
+                    <div class="repo" id="repo-${repo.name}">
                         <div class="repo-header">
-                            <h3 class="repo-name">${repo.needs_attention ? '⚠️' : '✅'} ${repo.name}</h3>
+                            <h3 class="repo-name">${repo.name}</h3>
                             <div class="repo-actions">
-                                ${canFetch ? `<button class="btn btn-small btn-secondary fetch-btn" onclick="fetchRepo('${repo.name}')" title="Fetch latest refs from remote">📡 Fetch</button>` : ''}
-                                ${canPull ? `<button class="btn btn-small pull-btn" onclick="pullRepo('${repo.name}', ${JSON.stringify(repo).replace(/'/g, "\\'").replace(/"/g, "&quot;")})" title="Pull latest changes">⬇️ Pull</button>` : ''}
+                                <button class="btn btn-sm primary" onclick="gitFetch('${repo.name}')" id="fetch-${repo.name}">📡 Fetch</button>
+                                <button class="btn btn-sm" onclick="gitPull('${repo.name}')" id="pull-${repo.name}">⬇️ Pull</button>
+                                ${githubLink}
                             </div>
                         </div>
-                        <div class="repo-info">
-                            <div><strong>Branch:</strong> <span class="branch">${repo.branch}</span> ${githubLink}</div>
-                            <div><strong>Status:</strong> ${statusItems.join('')}</div>
+                        
+                        <div class="status-grid">
+                            <span class="status-label">Branch:</span>
+                            <span class="status-value">${repo.branch} ${badges.join('')}</span>
+                            
+                            <span class="status-label">Remote:</span>
+                            <span class="status-value">${repo.upstream || 'None'}</span>
                         </div>
-                        ${lastCommit}
+                        
+                        ${commitInfo}
+                        
+                        ${repo.error ? `<div class="error">${repo.error}</div>` : ''}
                     </div>
                 `;
             }).join('');
             
-            container.innerHTML = html;
-            
-            // Update stats
-            document.getElementById('total-repos').textContent = data.total;
-            document.getElementById('needs-attention').textContent = data.needs_attention;
-            document.getElementById('timestamp').textContent = `Last updated: ${new Date(data.timestamp).toLocaleString()}`;
+            container.innerHTML = `<div class="repos">${repoHtml}</div>`;
         }
-
-        async function refreshAll() {
-            const btn = document.getElementById('refresh-btn');
+        
+        function gitFetch(repoName) {
+            const btn = document.getElementById(`fetch-${repoName}`);
             btn.disabled = true;
-            btn.textContent = '🔄 Refreshing...';
+            btn.textContent = '📡 Fetching...';
             
-            const data = await fetchRepos();
-            if (data) {
-                renderRepos(data);
-            } else {
-                document.getElementById('repos-container').innerHTML = '<div class="error">Failed to load repository data</div>';
-            }
-            
-            btn.disabled = false;
-            btn.textContent = '🔄 Refresh All';
+            fetch(`/api/repo/${repoName}/fetch`)
+                .then(response => response.json())
+                .then(data => {
+                    btn.disabled = false;
+                    btn.textContent = '📡 Fetch';
+                    
+                    if (data.success) {
+                        showMessage(`Fetch completed for ${repoName}`, 'success');
+                        // Update the specific repo display
+                        if (data.repo_status) {
+                            updateRepoDisplay(repoName, data.repo_status);
+                        }
+                    } else {
+                        showMessage(`Fetch failed for ${repoName}: ${data.message}`, 'error');
+                    }
+                })
+                .catch(error => {
+                    btn.disabled = false;
+                    btn.textContent = '📡 Fetch';
+                    showMessage(`Fetch error for ${repoName}: ${error.message}`, 'error');
+                });
         }
-
-        function toggleAutoRefresh() {
-            const btn = document.getElementById('auto-refresh-btn');
+        
+        function gitPull(repoName) {
+            const btn = document.getElementById(`pull-${repoName}`);
+            btn.disabled = true;
+            btn.textContent = '⬇️ Pulling...';
             
-            if (autoRefreshEnabled) {
-                clearInterval(autoRefreshInterval);
-                autoRefreshEnabled = false;
-                btn.textContent = '⏰ Auto-Refresh: OFF';
-                btn.className = 'btn btn-secondary';
-            } else {
-                autoRefreshInterval = setInterval(refreshAll, 60000);
-                autoRefreshEnabled = true;
-                btn.textContent = '⏰ Auto-Refresh: ON';
-                btn.className = 'btn btn-secondary';
-            }
+            fetch(`/api/repo/${repoName}/pull`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({confirmed: false})
+            })
+            .then(response => response.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.textContent = '⬇️ Pull';
+                
+                if (data.need_confirmation) {
+                    showConfirmationModal(repoName, data);
+                } else if (data.success) {
+                    showMessage(`Pull completed for ${repoName}`, 'success');
+                    if (data.repo_status) {
+                        updateRepoDisplay(repoName, data.repo_status);
+                    }
+                } else {
+                    showMessage(`Pull failed for ${repoName}: ${data.message}`, 'error');
+                }
+            })
+            .catch(error => {
+                btn.disabled = false;
+                btn.textContent = '⬇️ Pull';
+                showMessage(`Pull error for ${repoName}: ${error.message}`, 'error');
+            });
         }
-
-        // Close modal when clicking outside
-        window.onclick = function(event) {
-            const modal = document.getElementById('confirmModal');
-            if (event.target === modal) {
+        
+        function showConfirmationModal(repoName, data) {
+            const modal = document.getElementById('confirmation-modal');
+            const details = document.getElementById('modal-details');
+            const warning = document.getElementById('modal-warning');
+            const confirmBtn = document.getElementById('confirm-pull-btn');
+            
+            details.innerHTML = `
+                <p><strong>Repository:</strong> ${repoName}</p>
+                <p><strong>Branch:</strong> ${data.details.branch}</p>
+                <p><strong>Uncommitted changes:</strong> ${data.details.uncommitted_count}</p>
+                <p><strong>Ahead/Behind:</strong> ${data.details.ahead}/${data.details.behind}</p>
+            `;
+            
+            warning.textContent = data.warning;
+            
+            confirmBtn.onclick = () => {
                 closeModal();
-            }
-        }
-
-        // Initialize dashboard
-        document.addEventListener('DOMContentLoaded', async () => {
-            await refreshAll();
+                confirmPull(repoName);
+            };
             
-            // Start auto-refresh
-            autoRefreshInterval = setInterval(refreshAll, 60000);
+            modal.classList.add('show');
+        }
+        
+        function confirmPull(repoName) {
+            const btn = document.getElementById(`pull-${repoName}`);
+            btn.disabled = true;
+            btn.textContent = '⬇️ Pulling...';
+            
+            fetch(`/api/repo/${repoName}/pull`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({confirmed: true})
+            })
+            .then(response => response.json())
+            .then(data => {
+                btn.disabled = false;
+                btn.textContent = '⬇️ Pull';
+                
+                if (data.success) {
+                    showMessage(`Pull completed for ${repoName} (forced)`, 'success');
+                    if (data.repo_status) {
+                        updateRepoDisplay(repoName, data.repo_status);
+                    }
+                } else {
+                    showMessage(`Pull failed for ${repoName}: ${data.message}`, 'error');
+                }
+            })
+            .catch(error => {
+                btn.disabled = false;
+                btn.textContent = '⬇️ Pull';
+                showMessage(`Pull error for ${repoName}: ${error.message}`, 'error');
+            });
+        }
+        
+        function closeModal() {
+            document.getElementById('confirmation-modal').classList.remove('show');
+        }
+        
+        function updateRepoDisplay(repoName, repoStatus) {
+            // This would update just the specific repo card
+            // For simplicity, we'll just refresh all data
+            setTimeout(refreshData, 500);
+        }
+        
+        function showMessage(text, type) {
+            // Remove any existing messages
+            const existing = document.querySelector('.success-message, .error-message');
+            if (existing) existing.remove();
+            
+            const message = document.createElement('div');
+            message.className = type === 'success' ? 'success-message' : 'error-message';
+            message.textContent = text;
+            document.body.appendChild(message);
+            
+            setTimeout(() => message.remove(), 4000);
+        }
+        
+        // Initialize
+        refreshData();
+        startAutoRefresh();
+        
+        // Close modal on escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') closeModal();
+        });
+        
+        // Close modal on backdrop click
+        document.getElementById('confirmation-modal').addEventListener('click', (e) => {
+            if (e.target.id === 'confirmation-modal') closeModal();
         });
     </script>
 </body>
 </html>'''
+    
+    def _send_response(self, status_code, content, content_type):
+        """Send HTTP response"""
+        self.send_response(status_code)
+        self.send_header('Content-Type', content_type)
+        self.send_header('Content-Length', len(content.encode('utf-8')))
+        self.end_headers()
+        self.wfile.write(content.encode('utf-8'))
+    
+    def _send_error_json(self, status_code, message):
+        """Send error response as JSON"""
+        error_response = json.dumps({'success': False, 'message': message})
+        self._send_response(status_code, error_response, 'application/json')
+    
+    def _send_404(self):
+        """Send 404 response"""
+        self._send_response(404, '404 - Not Found', 'text/plain')
+    
+    def log_message(self, format, *args):
+        """Override to customize logging"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        print(f'[{timestamp}] {format % args}')
+
+def create_handler(git_dir):
+    """Create handler with git directory"""
+    def handler(*args, **kwargs):
+        return DashboardHandler(git_dir, *args, **kwargs)
+    return handler
 
 def main():
-    PORT = 8766  # Different from v1 to avoid conflicts
+    parser = argparse.ArgumentParser(description='Project Status Dashboard v2')
+    parser.add_argument('--port', type=int, default=8766, help='Port to run on (default: 8766)')
+    parser.add_argument('--git-dir', default=os.path.expanduser('~/git'), 
+                       help='Directory containing git repositories')
     
-    print(f"🔧 Project Status Dashboard v2")
-    print(f"Starting server on http://localhost:{PORT}")
-    print(f"Scanning repositories in: {Path.home() / 'git'}")
-    print("\nFeatures:")
-    print("• Interactive git fetch/pull operations")
-    print("• Confirmation dialogs for safety")
-    print("• Real-time status updates")
-    print("• Auto-refresh (60s intervals)")
-    print("\nPress Ctrl+C to stop")
+    args = parser.parse_args()
+    
+    git_dir = Path(args.git_dir).expanduser().resolve()
+    if not git_dir.exists():
+        print(f"Error: Git directory {git_dir} does not exist")
+        sys.exit(1)
+    
+    handler = create_handler(git_dir)
+    server = HTTPServer(('', args.port), handler)
+    
+    print(f"""
+🐱 Project Status Dashboard v2 starting...
+
+📂 Git directory: {git_dir}
+🌐 Server: http://localhost:{args.port}
+📋 API: http://localhost:{args.port}/api/repos
+
+Press Ctrl+C to stop
+""")
     
     try:
-        with socketserver.TCPServer(("", PORT), ProjectDashboardHandler) as httpd:
-            httpd.serve_forever()
+        server.serve_forever()
     except KeyboardInterrupt:
-        print("\n\nShutting down dashboard...")
-        sys.exit(0)
-    except OSError as e:
-        if "Address already in use" in str(e):
-            print(f"\n❌ Port {PORT} is already in use. Try a different port.")
-            sys.exit(1)
-        else:
-            raise
+        print("\n\n👋 Dashboard stopped")
+        server.shutdown()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
