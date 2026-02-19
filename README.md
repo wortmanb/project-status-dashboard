@@ -1,117 +1,217 @@
-# Project Status Dashboard
+# Project Status Dashboard v2 🐱
 
-A simple web dashboard showing git status across local repositories.
+Enhanced interactive dashboard for monitoring and managing git repositories with clickable operations.
 
-![Python](https://img.shields.io/badge/python-3.11+-blue)
-![No Dependencies](https://img.shields.io/badge/dependencies-none-green)
+**Evolution from v1:** This is the next generation of the project status dashboard, adding interactive git operations with safety guardrails and confirmation dialogs.
 
 ## Features
 
-- **Repository Overview**: Shows all git repos in `~/git/`
-- **Status at a Glance**:
-  - Current branch
-  - Uncommitted changes (count)
-  - Ahead/behind remote tracking
-  - Last commit (message, author, relative time)
-- **GitHub Integration**: Open issues count via `gh` CLI
-- **Auto-refresh**: Updates every 60 seconds
-- **Dark Theme**: Easy on the eyes, matches the friday-ui aesthetic
-- **JSON API**: `/api/repos` endpoint for programmatic access
+### 🔍 Visual Monitoring
+- **Real-time status** for all repositories in `~/git/`
+- **Branch information** with ahead/behind counts
+- **Uncommitted changes** detection and display
+- **Last commit details** (hash, message, author, relative time)
+- **GitHub integration** with issue counts (requires `gh` CLI)
+- **Auto-refresh** every 60 seconds with pause/resume controls
 
-## Installation
+### 🎛️ Interactive Operations
+- **📡 Fetch Button**: Safe git fetch operation for each repository
+- **⬇️ Pull Button**: Git pull with intelligent safety checks
+- **Real-time feedback** with loading states and operation results
+- **AJAX updates** without page reloads
 
+### 🛡️ Safety Features
+- **Uncommitted change detection**: Won't allow pulls that could fail
+- **Confirmation dialogs**: Shows exactly what will happen before destructive operations
+- **Operation feedback**: Real-time status with stdout/stderr output
+- **Timeout protection**: Commands won't hang indefinitely
+- **Non-destructive defaults**: Fetch is always safe and encouraged
+
+### 📱 User Experience
+- **Modern dark theme** inspired by GitHub
+- **Mobile responsive** design that works on any device
+- **Toast notifications** for operation feedback
+- **Modal confirmations** with detailed repository information
+- **Keyboard shortcuts** (ESC to close modals)
+- **RESTful API** for programmatic access
+
+## Installation & Usage
+
+### Quick Start
 ```bash
-# Clone the repo
-git clone git@github.com:wortmanb/project-status-dashboard.git ~/git/project-status-dashboard
-
-# Make it executable
-chmod +x ~/git/project-status-dashboard/dashboard.py
-
-# Optional: symlink to ~/bin
-ln -s ~/git/project-status-dashboard/dashboard.py ~/bin/project-dashboard
-```
-
-## Usage
-
-```bash
-# Run the dashboard
+cd ~/git/project-dashboard-v2
 ./dashboard.py
-
-# Or via symlink
-project-dashboard
 ```
 
-Then open http://localhost:8765 in your browser.
-
-## Configuration
-
-Edit the constants at the top of `dashboard.py`:
-
-```python
-GIT_DIR = Path.home() / "git"  # Directory to scan for repos
-PORT = 8765                     # Web server port
+### Options
+```bash
+./dashboard.py --port 8766 --git-dir ~/git
 ```
 
-## API
+### System Installation
+```bash
+# Create symlink for system-wide access
+ln -sf ~/git/project-dashboard-v2/dashboard.py ~/bin/project-dashboard-v2
+chmod +x ~/git/project-dashboard-v2/dashboard.py
+```
 
-### GET /
-Returns the HTML dashboard.
+### Access
+- **Web Interface**: http://localhost:8766
+- **JSON API**: http://localhost:8766/api/repos
+- **Individual Repo API**: http://localhost:8766/api/repo/{name}/fetch
+
+## API Endpoints
 
 ### GET /api/repos
-Returns JSON array of repository status:
-
+Returns comprehensive status for all repositories:
 ```json
-[
-  {
-    "name": "project-name",
-    "path": "/home/user/git/project-name",
+{
+  "scan_time": "2026-02-19T07:00:00Z",
+  "git_dir": "/home/user/git",
+  "total_repos": 12,
+  "repos": [
+    {
+      "name": "my-project",
+      "branch": "main",
+      "has_uncommitted": true,
+      "uncommitted_count": 3,
+      "ahead": 2,
+      "behind": 1,
+      "last_commit": {
+        "hash": "c5ba60a",
+        "message": "Add new feature",
+        "author": "Developer",
+        "time": "2 hours ago"
+      },
+      "github_url": "https://github.com/user/my-project",
+      "open_issues": 5
+    }
+  ]
+}
+```
+
+### GET /api/repo/{name}/fetch
+Performs safe git fetch operation:
+```json
+{
+  "success": true,
+  "message": "Fetch completed successfully",
+  "output": "From github.com:user/repo\n   c5ba60a..f8d9e2b  main -> origin/main",
+  "repo_status": { /* updated repo status */ }
+}
+```
+
+### POST /api/repo/{name}/pull
+Performs git pull with safety checks:
+```json
+// Request body
+{
+  "confirmed": false  // Set to true to bypass safety checks
+}
+
+// Response (if confirmation needed)
+{
+  "success": false,
+  "need_confirmation": true,
+  "message": "Repository has 3 uncommitted changes",
+  "details": {
     "branch": "main",
-    "has_changes": true,
-    "change_count": 3,
-    "ahead": 1,
-    "behind": 0,
-    "last_commit": {
-      "hash": "abc1234",
-      "message": "feat: add new feature",
-      "author": "username",
-      "time": "2 hours ago"
-    },
-    "github_url": "https://github.com/owner/repo",
-    "github_issues": 5
-  }
-]
+    "uncommitted_count": 3,
+    "ahead": 2,
+    "behind": 1
+  },
+  "warning": "Pull may fail or create merge conflicts. Confirm to continue."
+}
 ```
 
-## Requirements
+## Safety Workflow
 
-- Python 3.11+
-- `gh` CLI (optional, for GitHub issues count)
-- No external Python dependencies
+### Fetch Operations (Always Safe)
+1. Click **📡 Fetch** button
+2. Repository fetches latest remote information
+3. UI updates with new ahead/behind counts
+4. No risk of conflicts or data loss
 
-## Running as a Service
+### Pull Operations (With Safety Checks)
+1. Click **⬇️ Pull** button
+2. System checks for uncommitted changes
+3. If changes detected:
+   - Shows confirmation modal with repository details
+   - User can cancel or proceed with warning
+4. If safe or confirmed:
+   - Performs git pull
+   - Updates UI with results
+   - Shows success/error message
 
-Create a systemd user service at `~/.config/systemd/user/project-dashboard.service`:
+## Technical Architecture
 
-```ini
-[Unit]
-Description=Project Status Dashboard
-After=network.target
+### Backend
+- **Pure Python stdlib** HTTP server (no external dependencies)
+- **Threaded request handling** for concurrent operations
+- **Subprocess timeout protection** prevents hanging
+- **Working directory isolation** for git operations
+- **Comprehensive error handling** with user-friendly messages
 
-[Service]
-ExecStart=/home/bret/git/project-status-dashboard/dashboard.py
-Restart=on-failure
+### Frontend
+- **Vanilla JavaScript** with modern async/await patterns
+- **CSS Grid layout** for responsive design
+- **Real-time AJAX** updates without page reloads
+- **Progressive enhancement** - works with JavaScript disabled
+- **Accessibility features** - keyboard navigation, screen reader friendly
 
-[Install]
-WantedBy=default.target
-```
+### Security Considerations
+- **No destructive operations** without explicit confirmation
+- **Timeout protection** prevents resource exhaustion
+- **Input validation** on repository names
+- **Safe subprocess execution** with proper escaping
 
-Enable and start:
+## Comparison with v1
 
-```bash
-systemctl --user enable project-dashboard
-systemctl --user start project-dashboard
-```
+| Feature | v1 | v2 |
+|---------|----|----|
+| Repository Status | ✅ Read-only display | ✅ Read-only display |
+| Git Operations | ❌ Manual CLI required | ✅ Click to fetch/pull |
+| Safety Checks | ❌ None | ✅ Uncommitted change detection |
+| User Feedback | ❌ None | ✅ Real-time notifications |
+| Confirmations | ❌ None | ✅ Modal dialogs with details |
+| Mobile Support | ✅ Basic responsive | ✅ Enhanced mobile UX |
+| API Access | ✅ JSON endpoint | ✅ Enhanced RESTful API |
+| Port | 8765 | 8766 |
 
-## License
+## Use Cases
 
-MIT
+### Daily Development Workflow
+1. **Morning routine**: Open dashboard to see overnight changes
+2. **Batch fetch**: Click fetch on all repositories to get latest remote info
+3. **Selective pull**: Only pull repositories that need updates
+4. **Status overview**: Quick visual check of all projects at once
+
+### Team Collaboration
+- **Pre-standup**: Ensure all repositories are up-to-date
+- **Before deployment**: Verify clean state across all projects
+- **Code review prep**: Fetch latest changes before creating pull requests
+
+### Repository Maintenance
+- **Bulk operations**: Fetch all repositories efficiently
+- **Change detection**: Visual indication of uncommitted work
+- **Branch awareness**: Track feature branch status across projects
+
+## Tech Stack
+
+- **Backend**: Python 3.8+ (stdlib only)
+- **Frontend**: Vanilla HTML5/CSS3/JavaScript (ES6+)
+- **Architecture**: Single-file HTTP server with embedded frontend
+- **Dependencies**: None (pure stdlib implementation)
+- **Performance**: Parallel git operations, efficient status caching
+- **Compatibility**: Works on any system with Python and git
+
+## Version History
+
+- **v2.0**: Interactive git operations with safety checks
+- **v1.0**: Read-only repository status dashboard
+
+---
+
+**Port Conflict Note**: v2 runs on port 8766 to avoid conflicts with v1 (port 8765). Both can run simultaneously for comparison.
+
+*Part of the Friday nightly builds series - building useful tools one commit at a time.* 🌙
